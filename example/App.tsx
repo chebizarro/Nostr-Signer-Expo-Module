@@ -138,7 +138,7 @@ export default function App(): JSX.Element {
         packageName,
         eventJson,
         eventId,
-        npub
+        npub,
       );
       setSignature(result.signature);
       Alert.alert("Sign Event", `Signature: ${result.signature}`);
@@ -174,7 +174,7 @@ export default function App(): JSX.Element {
           messageToEncrypt,
           "encrypt123",
           data,
-          publicKey
+          publicKey,
         );
       } else {
         result = await Nip55.nip04Encrypt(
@@ -182,7 +182,7 @@ export default function App(): JSX.Element {
           messageToEncrypt,
           "encrypt123",
           data,
-          publicKey
+          publicKey,
         );
       }
       setEncryptedMessage(result.result);
@@ -211,22 +211,24 @@ export default function App(): JSX.Element {
         return;
       }
 
+      const { data } = nip19.decode(encryptPubKey);
+
       let result;
       if (isScriptActive) {
         result = await Nip55.nip44Decrypt(
           packageName,
           encryptedMessage,
           "decrypt123",
-          encryptPubKey,
-          publicKey
+          publicKey,
+          data,
         );
       } else {
         result = await Nip55.nip04Decrypt(
           packageName,
           encryptedMessage,
           "decrypt123",
-          encryptPubKey,
-          publicKey
+          publicKey,
+          data,
         );
       }
 
@@ -250,7 +252,7 @@ export default function App(): JSX.Element {
         packageName,
         eventJson,
         eventId,
-        publicKey
+        publicKey,
       );
       Alert.alert("Decrypt Zap Event", `Result: ${result.result}`);
     } catch (error: any) {
