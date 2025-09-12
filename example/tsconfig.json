@@ -3,8 +3,8 @@
   "compilerOptions": {
     "strict": true,
     "paths": {
-      "nostr-nip55-signer": ["../src/index"],
-      "nostr-nip55-signer/*": ["../src/*"]
+      "expo-nip55": ["../src/index"],
+      "expo-nip55/*": ["../src/*"]
     }
   }
 }

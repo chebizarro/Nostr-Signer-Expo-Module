@@ -12,6 +12,9 @@ importers:
         specifier: '*'
         version: 19.1.1
     devDependencies:
+      '@types/jest':
+        specifier: ^29.5.12
+        version: 29.5.14
       '@types/react':
         specifier: ~18.3.12
         version: 18.3.24
@@ -24,9 +27,15 @@ importers:
       expo-modules-core:
         specifier: ^2.0.0
         version: 2.2.3
+      jest:
+        specifier: ^29.7.0
+        version: 29.7.0(@types/node@24.3.1)
       react-native:
         specifier: 0.76.0
         version: 0.76.0(@babel/core@7.28.4)(@babel/preset-env@7.28.3(@babel/core@7.28.4))(@types/react@18.3.24)(react@19.1.1)
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.2
 
 packages:
 
