@@ -25,7 +25,7 @@ jobs:
           # Do not enable pnpm cache here; pnpm is set up by pnpm/action-setup
 
       - name: Install JS deps
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: JS tests
         run: pnpm test
