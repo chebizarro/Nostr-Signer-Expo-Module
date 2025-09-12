@@ -5,7 +5,6 @@ import android.content.Intent
 import biz.nostr.android.nip55.AppInfo
 import biz.nostr.android.nip55.IntentBuilder
 import biz.nostr.android.nip55.Signer
-import biz.nostr.expo.signer.exceptions.ActivityAlreadyStartedException
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.exception.toCodedException
@@ -19,10 +18,26 @@ class NostrNip55SignerModule : Module() {
 
     private var signerPackageName: String? = null
 
-    // region: Fields for fallback approach
-    private var pendingPromise: Promise? = null
-    private var pendingRequestCode: Int = 0
-    private val callsMap: MutableMap<Int, CallData> = mutableMapOf()
+    // region: Pending calls map for fallback intents
+    private data class PendingCall(val promise: Promise, val op: Operation)
+    private val pendingCalls: MutableMap<Int, PendingCall> = mutableMapOf()
+    private var requestSeq: Int = 0
+    private fun nextRequestCodeFor(op: Operation): Int {
+        // Generate request codes in a large range to minimize collision
+        // Combine op base with an incrementing sequence
+        requestSeq = (requestSeq + 1) and 0x0FFF
+        return op.base + requestSeq
+    }
+    internal enum class Operation(val base: Int) {
+        GET_PUBLIC_KEY(REQUEST_GET_PUBLIC_KEY),
+        SIGN_EVENT(REQUEST_SIGN_EVENT),
+        NIP04_ENCRYPT(REQUEST_NIP_04_ENCRYPT),
+        NIP04_DECRYPT(REQUEST_NIP_04_DECRYPT),
+        NIP44_ENCRYPT(REQUEST_NIP_44_ENCRYPT),
+        NIP44_DECRYPT(REQUEST_NIP_44_DECRYPT),
+        DECRYPT_ZAP_EVENT(REQUEST_DECRYPT_ZAP_EVENT),
+        GET_RELAYS(REQUEST_GET_RELAYS)
+    }
 
     override fun definition() = ModuleDefinition {
         Name("ExpoNostrSignerModule")
@@ -39,10 +54,10 @@ class NostrNip55SignerModule : Module() {
             val signerAppInfos: List<AppInfo> = Signer.getInstalledSignerApps(context)
             signerAppInfos.map { info ->
                 mapOf(
-                        "name" to info.name,
-                        "packageName" to info.packageName,
-                        "iconData" to info.iconData,
-                        "iconUrl" to info.iconUrl
+                    "name" to info.name,
+                    "packageName" to info.packageName,
+                    // Do not pass iconData to avoid large payloads
+                    "iconUrl" to info.iconUrl
                 )
             }
         }
@@ -64,9 +79,9 @@ class NostrNip55SignerModule : Module() {
             } else {
                 // Fallback approach
                 launchFallbackIntent(
-                        requestCode = REQUEST_GET_PUBLIC_KEY,
-                        intent = IntentBuilder.getPublicKeyIntent(packageName, permissions),
-                        promise = promise
+                    op = Operation.GET_PUBLIC_KEY,
+                    intent = IntentBuilder.getPublicKeyIntent(packageName, permissions),
+                    promise = promise
                 )
             }
         }
@@ -90,7 +105,7 @@ class NostrNip55SignerModule : Module() {
                 promise.resolve(resultMap)
             } else {
                 val intent = IntentBuilder.signEventIntent(packageName, eventJson, eventId, npub)
-                launchFallbackIntent(REQUEST_SIGN_EVENT, intent, promise)
+                launchFallbackIntent(Operation.SIGN_EVENT, intent, promise)
             }
         }
 
@@ -108,7 +123,7 @@ class NostrNip55SignerModule : Module() {
                 promise.resolve(resultMap)
             } else {
                 val intent = IntentBuilder.nip04EncryptIntent(pkg, plainText, id, npub, pubKey)
-                launchFallbackIntent(REQUEST_NIP_04_ENCRYPT, intent, promise)
+                launchFallbackIntent(Operation.NIP04_ENCRYPT, intent, promise)
             }
         }
 
@@ -126,7 +141,7 @@ class NostrNip55SignerModule : Module() {
                 promise.resolve(resultMap)
             } else {
                 val intent = IntentBuilder.nip04DecryptIntent(pkg, encryptedText, id, npub, pubKey)
-                launchFallbackIntent(REQUEST_NIP_04_DECRYPT, intent, promise)
+                launchFallbackIntent(Operation.NIP04_DECRYPT, intent, promise)
             }
         }
 
@@ -144,7 +159,7 @@ class NostrNip55SignerModule : Module() {
                 promise.resolve(resultMap)
             } else {
                 val intent = IntentBuilder.nip44EncryptIntent(pkg, plainText, id, npub, pubKey)
-                launchFallbackIntent(REQUEST_NIP_44_ENCRYPT, intent, promise)
+                launchFallbackIntent(Operation.NIP44_ENCRYPT, intent, promise)
             }
         }
 
@@ -162,7 +177,7 @@ class NostrNip55SignerModule : Module() {
                 promise.resolve(resultMap)
             } else {
                 val intent = IntentBuilder.nip44DecryptIntent(pkg, encryptedText, id, npub, pubKey)
-                launchFallbackIntent(REQUEST_NIP_44_DECRYPT, intent, promise)
+                launchFallbackIntent(Operation.NIP44_DECRYPT, intent, promise)
             }
         }
 
@@ -179,7 +194,7 @@ class NostrNip55SignerModule : Module() {
                 promise.resolve(resultMap)
             } else {
                 val intent = IntentBuilder.decryptZapEventIntent(pkg, eventJson, id, npub)
-                launchFallbackIntent(REQUEST_DECRYPT_ZAP_EVENT, intent, promise)
+                launchFallbackIntent(Operation.DECRYPT_ZAP_EVENT, intent, promise)
             }
         }
 
@@ -195,121 +210,71 @@ class NostrNip55SignerModule : Module() {
                 promise.resolve(resultMap)
             } else {
                 val intent = IntentBuilder.getRelaysIntent(pkg, id, npub)
-                launchFallbackIntent(REQUEST_GET_RELAYS, intent, promise)
+                launchFallbackIntent(Operation.GET_RELAYS, intent, promise)
             }
         }
 
         OnActivityResult { _, payload ->
-            callsMap[payload.requestCode] ?: return@OnActivityResult
-            callsMap.remove(payload.requestCode)
+            val pending = pendingCalls.remove(payload.requestCode) ?: return@OnActivityResult
+            val promise = pending.promise
 
-            // If the user canceled the operation
             if (payload.resultCode == android.app.Activity.RESULT_CANCELED) {
-                pendingPromise?.reject("ActivityCancelled", "Activity Cancelled", null)
-				pendingPromise = null
+                promise.reject("INTENT_CANCELLED", "Activity cancelled by user", null)
                 return@OnActivityResult
             }
 
-            // If we don't have an intent or extras, we can't proceed
             val dataIntent = payload.data
             if (dataIntent == null) {
-                pendingPromise?.reject("ERROR", "No data returned from activity", null)
-				pendingPromise = null
+                promise.reject("INTENT_FAILED", "No data returned from activity", null)
                 return@OnActivityResult
             }
-
-            when (payload.requestCode) {
-                REQUEST_GET_PUBLIC_KEY -> {
-                    val npub = dataIntent.getStringExtra("signature")
-                    val packageName = dataIntent.getStringExtra("package")
-
-                    val resultMap = mutableMapOf<String, Any?>()
-                    resultMap["npub"] = npub
-                    resultMap["package"] = packageName
-
-                    pendingPromise?.resolve(resultMap)
-                }
-                REQUEST_SIGN_EVENT -> {
-                    val signature = dataIntent.getStringExtra("signature")
-                    val id = dataIntent.getStringExtra("id")
-                    val signedEventJson = dataIntent.getStringExtra("event")
-
-                    val resultMap =
-						mutableMapOf<String, Any?>(
-							"signature" to signature,
-							"id" to id,
-							"event" to signedEventJson
-						)
-                    pendingPromise?.resolve(resultMap)
-                }
-                REQUEST_NIP_04_ENCRYPT, REQUEST_NIP_44_ENCRYPT -> {
-                    val signature = dataIntent.getStringExtra("signature")
-                    val resultId = dataIntent.getStringExtra("id")
-
-                    val resultMap =
-						mutableMapOf<String, Any?>("result" to signature, "id" to resultId)
-                    pendingPromise?.resolve(resultMap)
-                }
-                REQUEST_NIP_04_DECRYPT, REQUEST_NIP_44_DECRYPT -> {
-                    val signature = dataIntent.getStringExtra("result")
-                    val resultId = dataIntent.getStringExtra("id")
-
-                    val resultMap =
-						mutableMapOf<String, Any?>("result" to signature, "id" to resultId)
-                    pendingPromise?.resolve(resultMap)
-                }
-                REQUEST_DECRYPT_ZAP_EVENT -> {
-                    val decryptedEventJson = dataIntent.getStringExtra("result")
-                    val resultId = dataIntent.getStringExtra("id")
-
-                    val resultMap =
-						mutableMapOf<String, Any?>(
-							"result" to decryptedEventJson,
-							"id" to resultId
-						)
-                    pendingPromise?.resolve(resultMap)
-                }
-				REQUEST_GET_RELAYS -> {
-                    val eventJson = dataIntent.getStringExtra("result")
-                    val resultId = dataIntent.getStringExtra("id")
-
-                    val resultMap =
-						mutableMapOf<String, Any?>(
-							"result" to eventJson,
-							"id" to resultId
-						)
-                    pendingPromise?.resolve(resultMap)
-                }
-                else -> {
-                    // If the requestCode is unknown, reject
-                    pendingPromise?.reject(
-						"ERROR",
-						"Unknown request code: $payload.requestCode",
-						null
-                    )
-                }
-            }
-			pendingPromise = null
+            val mapped = mapIntentResult(pending.op, dataIntent)
+            promise.resolve(mapped)
         }
     }
 
-    /** Helper method to handle fallback launching */
-    private fun launchFallbackIntent(requestCode: Int, intent: Intent, promise: Promise) {
-        // If another fallback is pending, reject
-        if (pendingPromise != null) {
-            throw ActivityAlreadyStartedException()
+    // Map intent extras to the public API result shape per operation.
+    private fun mapIntentResult(op: Operation, dataIntent: Intent): Map<String, String?> {
+        return when (op) {
+            Operation.GET_PUBLIC_KEY -> {
+                val npub = dataIntent.getStringExtra("signature")
+                val packageName = dataIntent.getStringExtra("package")
+                mapOf("npub" to npub, "package" to packageName)
+            }
+            Operation.SIGN_EVENT -> {
+                val signature = dataIntent.getStringExtra("signature")
+                val id = dataIntent.getStringExtra("id")
+                val signedEventJson = dataIntent.getStringExtra("event")
+                mapOf("signature" to signature, "id" to id, "event" to signedEventJson)
+            }
+            Operation.NIP04_ENCRYPT, Operation.NIP44_ENCRYPT,
+            Operation.NIP04_DECRYPT, Operation.NIP44_DECRYPT,
+            Operation.DECRYPT_ZAP_EVENT, Operation.GET_RELAYS -> {
+                val signature = dataIntent.getStringExtra("signature")
+                val resultId = dataIntent.getStringExtra("id")
+                mapOf("result" to signature, "id" to resultId)
+            }
         }
-        pendingRequestCode = requestCode
-        callsMap[requestCode] = CallData(promise, requestCode)
+    }
 
+    // Visible for testing: expose mapping for Robolectric tests
+    @androidx.annotation.VisibleForTesting
+    internal fun mapIntentResultForTest(op: Operation, dataIntent: Intent): Map<String, String?> =
+        mapIntentResult(op, dataIntent)
+
+    /** Helper method to handle fallback launching */
+    private fun launchFallbackIntent(op: Operation, intent: Intent, promise: Promise) {
+        val activity = appContext.activityProvider?.currentActivity
+        if (activity == null) {
+            promise.reject("NO_ACTIVITY", "No current activity available to launch signer", null)
+            return
+        }
         try {
-            appContext.throwingActivity.startActivityForResult(intent, pendingRequestCode)
-            pendingPromise = promise
+            val requestCode = nextRequestCodeFor(op)
+            pendingCalls[requestCode] = PendingCall(promise, op)
+            activity.startActivityForResult(intent, requestCode)
         } catch (e: Throwable) {
-            // Clean up
-            pendingPromise = null
-            pendingRequestCode = 0
-            promise.reject(e.toCodedException())
+            promise.reject("INTENT_FAILED", "Failed to start activity for result", e.toCodedException())
         }
     }
 
@@ -336,6 +301,6 @@ class NostrNip55SignerModule : Module() {
         private const val REQUEST_GET_RELAYS = 1008
     }
 
-    private data class CallData(val promise: Promise, val operation: Int)
+    // no-op marker class removed; using pendingCalls map instead
 
 }

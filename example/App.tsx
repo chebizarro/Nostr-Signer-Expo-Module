@@ -1,4 +1,4 @@
-import * as Nip55 from "nostr-nip55-signer";
+import * as Nip55 from "expo-nip55";
 import { getEventHash, nip19 } from "nostr-tools";
 import React, { useState, useEffect } from "react";
 import {
@@ -36,7 +36,10 @@ export default function App(): JSX.Element {
   const [encryptedMessage, setEncryptedMessage] = useState<string>("");
   const [decryptedMessage, setDecryptedMessage] = useState<string>("");
   const [signerInstalled, setSignerInstalled] = useState<boolean>(false);
-  const [packageName, setPackageName] = useState<string>("");
+  // Default to known signer package; user can still pick another from the list.
+  const [packageName, setPackageName] = useState<string>(
+    "com.greenart7c3.nostrsigner"
+  );
   const [signerApps, setSignerApps] = useState<SignerAppInfo[]>([]);
   const [isScriptActive, setIsScriptActive] = useState<boolean>(false);
   const [relays, setRelays] = useState<string>("");
