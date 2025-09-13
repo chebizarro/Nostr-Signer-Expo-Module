@@ -62,6 +62,25 @@ react {
     autolinkLibrariesWithApp()
 }
 
+// Ensure the generated autolinking PackageList uses the modern Expo Modules import
+afterEvaluate {
+    // This task is created by the React Native Gradle Plugin
+    tasks.named("generateAutolinkingPackageList").configure {
+        doLast {
+            def pkgList = file("${buildDir}/generated/autolinking/src/main/java/com/facebook/react/PackageList.java")
+            if (pkgList.exists()) {
+                def text = pkgList.getText('UTF-8')
+                // Replace legacy import with the correct one
+                def updated = text.replace('import expo.core.ExpoModulesPackage;', 'import expo.modules.ExpoModulesPackage;')
+                if (updated != text) {
+                    pkgList.write(updated, 'UTF-8')
+                    println "Patched generated PackageList.java to use expo.modules.ExpoModulesPackage"
+                }
+            }
+        }
+    }
+}
+
 /**
  * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
  */
